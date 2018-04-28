@@ -25,7 +25,7 @@ typedef unsigned long long ull;
 struct Config{
     int Device; //fd for block device 
     FILE *TraceFile;        
-    FILE *ResultsFile;  //FILE for trace file & result file
+    FILE *ResultFile;  //FILE for trace file & result file
     int Test_Time; //Max traceplay time (second) 
     int sync; //sync or async flag
 
@@ -143,8 +143,8 @@ void* Buffer_Manage_Handler(void *thread_data){
 static void finalize(){
     int i;
     if(config.Device>=0)close(config.Device);
-    if(config.Trace!=NULL)fclose(config.TraceFile);
-    if(config.Results!=NULL)fclose(config.ResultFile);
+    if(config.TraceFile!=NULL)fclose(config.TraceFile);
+    if(config.ResultFile!=NULL)fclose(config.ResultFile);
     for( i=0 ; i<QUEUE_LENGTH ; i++ ){
         if(config.IOQueue[i].Buf!=NULL)free(config.IOQueue[i].Buf);
     }
@@ -159,8 +159,7 @@ static int initialize(const char* Dev_Path, const char* Trace_Path, const char* 
     char line[MAX_LINE_LENGTH];
     double req_sec;
 
-    //pthread_spin_init(&spinlock,0);
-    config.spinlock = PTHREAD_SPINLOCK_INITIALIZER;
+    pthread_spin_init(&spinlock,0);
     config.mutex = PTHREAD_MUTEX_INITIALIZER;  
     config.cond  = PTHREAD_COND_INITIALIZER;
     config.Nr_Trace_Read    =   0;
@@ -279,7 +278,7 @@ repeat:
     }
     if(config.Trace_Buffer[n].Request_us > cur_us-config.Trace_Start_us){
         if(!config.sync){
-            usleep(Trace_Buffer[n].Request_us+Trace_Start_us-cur_us);
+            usleep(config.Trace_Buffer[n].Request_us+config.Trace_Start_us-cur_us);
         }
     }
     this_entry->Request_us=elapse_us();
