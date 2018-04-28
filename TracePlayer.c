@@ -23,34 +23,34 @@ typedef unsigned long long ull;
 //************* Data Structure Definition ****************
 
 struct Config{
-    int Device, //fd for block device 
-    FILE *TraceFile,        
-    FILE *ResultsFile,  //FILE for trace file & result file
-    int Test_Time, //Max traceplay time (second) 
-    int sync, //sync or async flag
+    int Device; //fd for block device 
+    FILE *TraceFile;        
+    FILE *ResultsFile;  //FILE for trace file & result file
+    int Test_Time; //Max traceplay time (second) 
+    int sync; //sync or async flag
 
-    struct Trace_Entry *Trace_Buffer,   //buffer for scanned trace entries 
-    struct Record *Record_Buffer,   //buffer for TracePlay results
+    struct Trace_Entry *Trace_Buffer;   //buffer for scanned trace entries 
+    struct Record *Record_Buffer;   //buffer for TracePlay results
 
-    struct Queue_Entry *IOQueue,    //Link_list Buffer for IOs in flight
-    struct Queue_Entry *head,
-    struct Queue_Entry *tail,
-    int Queue_Free, //how many available buffers 
+    struct Queue_Entry *IOQueue;    //Link_list Buffer for IOs in flight
+    struct Queue_Entry *head;
+    struct Queue_Entry *tail;
+    int Queue_Free; //how many available buffers 
 
-    ull Trace_Start_us,
-    ull Nr_Trace_Read,
-    int Nr_Flight_IOs,  //# of IOs in flight
-    int First_Entry_Flag,
-    int should_stop,
+    ull Trace_Start_us;
+    ull Nr_Trace_Read;
+    int Nr_Flight_IOs;  //# of IOs in flight
+    int First_Entry_Flag;
+    int should_stop;
 
-    io_context_t ctx,
+    io_context_t ctx;
 
-    pthread_t Reap_th,  //thread for handling return IOs
-    pthread_t BufferManage_th,  //thread for managing the Buffer of tracefile & resultfile
+    pthread_t Reap_th; //thread for handling return IOs
+    pthread_t BufferManage_th;  //thread for managing the Buffer of tracefile & resultfile
 
-    pthread_spinlock_t spinlock,    //spinlock for Queue_Entry allocation and recycling
-    pthread_mutex_t mutex,  
-    pthread_cond_t cond,
+    pthread_spinlock_t spinlock;    //spinlock for Queue_Entry allocation and recycling
+    pthread_mutex_t mutex;  
+    pthread_cond_t cond;
 }
 
 
@@ -322,7 +322,7 @@ int main(int argc, char *argv[]){
     const char * Trace_Path=argv[2];
     const char * Result_Path=argv[3];
     config.Test_Time = atoi(argv[4]);
-    config.sync  =  0
+    config.sync  =  0;
     if(initialize(Dev_Path,Trace_Path,Result_Path)<0)return -1;
     trace_play();
     pthread_join(config.Reap_th,NULL);
