@@ -159,9 +159,9 @@ static int initialize(const char* Dev_Path, const char* Trace_Path, const char* 
     char line[MAX_LINE_LENGTH];
     double req_sec;
 
-    pthread_spin_init(&spinlock,0);
-    config.mutex = PTHREAD_MUTEX_INITIALIZER;  
-    config.cond  = PTHREAD_COND_INITIALIZER;
+    pthread_spin_init(&config.spinlock,0);
+    config.mutex = pthread_mutex_init(&config.mutex,NULL);  
+    config.cond  = pthread_cond_init(&config.cond,NULL);
     config.Nr_Trace_Read    =   0;
     config.Nr_Flight_IOs    =   0;
     config.First_Entry_Flag =   1;
