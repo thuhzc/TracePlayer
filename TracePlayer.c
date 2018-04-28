@@ -51,7 +51,7 @@ struct Config{
     pthread_spinlock_t spinlock;    //spinlock for Queue_Entry allocation and recycling
     pthread_mutex_t mutex;  
     pthread_cond_t cond;
-}
+};
 
 
 struct Trace_Entry{
@@ -88,7 +88,7 @@ struct Queue_Entry{
 #define IO_BUFFER_SIZE (512*256)
 #define TRACE_BUFFER_SIZE 100000 
 
-Config config;
+struct Config config;
 
 //****************************************
 
