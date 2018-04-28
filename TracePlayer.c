@@ -131,7 +131,7 @@ void* IO_Completion_Handler(void *thread_data){
                 pthread_cond_signal(&config.cond);
                 pthread_mutex_unlock(&config.mutex);
             }
-            pr_debug("ID:%d,req_us:%llu,ret_us:%llu,latency:%llu flight:%d\n",id,this_io->Request_us,return_us,return_us-this_io->Request_us,config.Nr_Flight_IOs);
+            //pr_debug("ID:%d,req_us:%llu,ret_us:%llu,latency:%llu flight:%d\n",id,this_io->Request_us,return_us,return_us-this_io->Request_us,config.Nr_Flight_IOs);
         }
     }
     pthread_exit(NULL);
@@ -160,8 +160,8 @@ static int initialize(const char* Dev_Path, const char* Trace_Path, const char* 
     double req_sec;
 
     pthread_spin_init(&config.spinlock,0);
-    config.mutex = pthread_mutex_init(&config.mutex,NULL);  
-    config.cond  = pthread_cond_init(&config.cond,NULL);
+    pthread_mutex_init(&config.mutex,NULL);  
+    pthread_cond_init(&config.cond,NULL);
     config.Nr_Trace_Read    =   0;
     config.Nr_Flight_IOs    =   0;
     config.First_Entry_Flag =   1;
@@ -291,12 +291,12 @@ static void trace_play(){
     int n=0;
     ull now_us;
     while(1){
+        process_one_request(n++);
         now_us=elapse_us();
-        if(now_us>config.Test_Time*1000000||n>=config.Nr_Trace_Read){
+        if(now_us-config.Trace_Start_us>config.Test_Time*1000000||n>=config.Nr_Trace_Read){
             config.should_stop=1;
             break;
         }
-        process_one_request(n++);
         if(config.sync){
             pthread_mutex_lock(&config.mutex);
             pthread_cond_wait(&config.cond,&config.mutex);
