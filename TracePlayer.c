@@ -81,15 +81,15 @@ struct Queue_Entry{
 
 //********* Global Variences ************
 
-#define NR_ARG 5
+#define NR_ARG 7
 #define MAX_LINE_LENGTH 201
 #define QUEUE_LENGTH 4096
 #define AIO_MAXIO 512
 #define IO_BUFFER_SIZE (512*256)
-#define TRACE_BUFFER_SIZE 100000 
+#define TRACE_BUFFER_SIZE 1000000 
 
 struct Config config;
-
+int sleep_us;
 //****************************************
 
 static inline ull elapse_us(){
@@ -302,14 +302,18 @@ static void trace_play(){
             pthread_cond_wait(&config.cond,&config.mutex);
             pthread_mutex_unlock(&config.mutex);
         }
+        usleep(sleep_us);
     }
 }
 
 static void result_persist(){
     int i;
+    ull total=0;
     for(i=0;i<config.Nr_Trace_Read;i++){
         fprintf(config.ResultFile, "%llu %llu\n", config.Record_Buffer[i].Request_us,config.Record_Buffer[i].Latency );
+        total+=config.Record_Buffer[i].Latency;
     }
+    pr_debug("Avg Latency:%llu\n",total/config.Nr_Trace_Read);
 }
 
 int main(int argc, char *argv[]){
@@ -321,7 +325,8 @@ int main(int argc, char *argv[]){
     const char * Trace_Path=argv[2];
     const char * Result_Path=argv[3];
     config.Test_Time = atoi(argv[4]);
-    config.sync  =  0;
+    config.sync = atoi(argv[5]);
+    sleep_us=atoi(argv[6]);    
     if(initialize(Dev_Path,Trace_Path,Result_Path)<0)return -1;
     trace_play();
     pthread_join(config.Reap_th,NULL);
