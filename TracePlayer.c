@@ -74,6 +74,7 @@ struct Trace_Entry{
 };
 
 struct Record{
+    ull ID;
     ull Request_us;
     ull Latency; //us
 };
@@ -112,7 +113,8 @@ static inline ull elapse_us(){
 void* IO_Completion_Handler(void *thread_data){
     struct io_event events[AIO_MAXIO];
     struct Queue_Entry *this_io;
-    int retIOs,i,id;
+    int retIOs,i;
+    ull n;
     ull return_us;
     while(1){
         if(config.should_stop && config.Nr_Flight_IOs==0 )break;
@@ -126,9 +128,10 @@ void* IO_Completion_Handler(void *thread_data){
             if(events[i].obj!=&this_io->IOcb){
                 printf("IOCB LOST\n");
             }
-            id=this_io->ID;
-            config.Record_Buffer[id].Request_us=this_io->Request_us;
-            config.Record_Buffer[id].Latency=return_us-this_io->Request_us;
+            n=this_io->ID%TRACE_BUFFER_SIZE;
+	    config.Record_Buffer[n].ID=this_io->ID;
+            config.Record_Buffer[n].Request_us=this_io->Request_us;
+            config.Record_Buffer[n].Latency=return_us-this_io->Request_us;
             pthread_spin_lock(&config.spinlock);
             config.Queue_Free++;
             config.tail->next=this_io;
@@ -171,13 +174,14 @@ void* Buffer_Manage_Handler(void *thread_data){
         config.Firsthalf=1-config.Firsthalf;
         if(j==TRACE_BUFFER_SIZE)config.Buffer_Needed=1;
         for(i=0;i<TRACE_BUFFER_SIZE/2;i++){
-            fprintf(config.ResultFile, "%llu %llu\n", config.Record_Buffer[base+i].Request_us,config.Record_Buffer[base+i].Latency);
+            fprintf(config.ResultFile, "%llu %llu %llu\n", config.Record_Buffer[base+i].ID,config.Record_Buffer[base+i].Request_us,config.Record_Buffer[base+i].Latency);
         }
 	config.persisted+=TRACE_BUFFER_SIZE/2;
     }
 }
 
 static void finalize(){
+    pr_debug("finalize\n");
     int i;
     if(config.Device>=0)close(config.Device);
     if(config.TraceFile!=NULL)fclose(config.TraceFile);
@@ -279,11 +283,12 @@ Error:
 }
 
 
-static int process_one_request(int n){
+static int process_one_request(int id){
     struct Queue_Entry *this_entry;
     struct iocb *this_iocb;
     int qfree;
     ull cur_us;
+    int n=id%TRACE_BUFFER_SIZE;
 repeat:
     pthread_spin_lock(&config.spinlock);
     qfree=config.Queue_Free;
@@ -298,7 +303,7 @@ repeat:
     }
     pthread_spin_unlock(&config.spinlock);
     if(qfree<=0)goto repeat;
-    this_entry->ID = n;
+    this_entry->ID = id;
     this_iocb=&this_entry->IOcb;
     if(config.Trace_Buffer[n].ByteCount>IO_BUFFER_SIZE){
         free(this_entry->Buf);
@@ -329,12 +334,14 @@ repeat:
 }
 
 static void trace_play(){
-    int n=0,i=0;
+    int n=0,i=0,j;
     ull now_us;
     while(1){
-        process_one_request(n++);
+	j=n%TRACE_BUFFER_SIZE;
+        process_one_request(j);
 	//printf("process req:%d\n",n);
         i++;
+	n++;
         now_us=elapse_us();
         if(now_us-config.Trace_Start_us>config.Test_Time*1000000||n>=config.Nr_Trace_Read){
 	    config.played=n;
