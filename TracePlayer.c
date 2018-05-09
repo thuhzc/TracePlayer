@@ -55,13 +55,16 @@ struct Config{
     io_context_t ctx;
 
     pthread_t Reap_th; //thread for handling return IOs
-    pthread_t BufferManage_th;  //thread for managing the Buffer of tracefile & resultfile
+    pthread_t TBufferManage_th;  //thread for managing the Buffer of tracefile
+    pthread_t RBufferManage_th;  //thread for managing the Buffer of resultfile
 
     pthread_spinlock_t spinlock;    //spinlock for Queue_Entry allocation and recycling
     pthread_mutex_t mutex;  
     pthread_cond_t cond;
     pthread_mutex_t mutex2;  
     pthread_cond_t cond2;
+    pthread_mutex_t mutex3;  
+    pthread_cond_t cond3;
 };
 
 
@@ -116,6 +119,7 @@ void* IO_Completion_Handler(void *thread_data){
     int retIOs,i;
     ull n;
     ull return_us;
+    ull ret1half=0,ret2half=0;
     while(1){
         if(config.should_stop && config.Nr_Flight_IOs==0 )break;
         retIOs=io_getevents(config.ctx,1,1,events,NULL);
@@ -129,7 +133,7 @@ void* IO_Completion_Handler(void *thread_data){
                 printf("IOCB LOST\n");
             }
             n=this_io->ID%TRACE_BUFFER_SIZE;
-	    config.Record_Buffer[n].ID=this_io->ID;
+	        config.Record_Buffer[n].ID=this_io->ID;
             config.Record_Buffer[n].Request_us=this_io->Request_us;
             config.Record_Buffer[n].Latency=return_us-this_io->Request_us;
             pthread_spin_lock(&config.spinlock);
@@ -138,7 +142,23 @@ void* IO_Completion_Handler(void *thread_data){
             config.tail=this_io;
             config.Nr_Flight_IOs--;
             pthread_spin_unlock(&config.spinlock);
-
+            if(n>TRACE_BUFFER_SIZE/2)ret1half++;
+            else ret2half++;
+            if(config.Firsthalf){
+                if(ret1half==TRACE_BUFFER_SIZE/2){
+                    ret1half=0;
+                    pthread_mutex_lock(&config.mutex3);
+                    pthread_cond_signal(&config.cond3);
+                    pthread_mutex_unlock(&config.mutex3);
+                }
+            }else{
+                if(ret2half==TRACE_BUFFER_SIZE/2){
+                    ret2half=0;
+                    pthread_mutex_lock(&config.mutex3);
+                    pthread_cond_signal(&config.cond3);
+                    pthread_mutex_unlock(&config.mutex3);
+                }
+            }
             if(config.sync){
                 pthread_mutex_lock(&config.mutex);
                 pthread_cond_signal(&config.cond);
@@ -150,8 +170,8 @@ void* IO_Completion_Handler(void *thread_data){
     pthread_exit(NULL);
 }
 
-void* Buffer_Manage_Handler(void *thread_data){
-    int i,j,base;
+void* Trace_Buffer_Manage_Handler(void *thread_data){
+    int j,base;
     char line[MAX_LINE_LENGTH];
     double req_sec;
     while(1){
@@ -159,7 +179,7 @@ void* Buffer_Manage_Handler(void *thread_data){
         pthread_mutex_lock(&config.mutex2);
         pthread_cond_wait(&config.cond2,&config.mutex2);
         pthread_mutex_unlock(&config.mutex2);
-	printf("buffer flush %d half\n",config.Firsthalf);
+	    printf("buffer flush %d half\n",config.Firsthalf);
         if(config.Firsthalf)base=0;
         else base=TRACE_BUFFER_SIZE/2;
         while(fgets(line,MAX_LINE_LENGTH,config.TraceFile)!=NULL&j<TRACE_BUFFER_SIZE/2){
@@ -171,12 +191,26 @@ void* Buffer_Manage_Handler(void *thread_data){
             j++;
         }
         config.Nr_Trace_Read+=j;
-        config.Firsthalf=1-config.Firsthalf;
         if(j==TRACE_BUFFER_SIZE)config.Buffer_Needed=1;
+    }
+}
+
+void* Result_Buffer_Manage_Handler(void *thread_data){
+    int i,base;
+    char line[MAX_LINE_LENGTH];
+    double req_sec;
+    while(1){
+        if(config.should_stop)break;
+        pthread_mutex_lock(&config.mutex3);
+        pthread_cond_wait(&config.cond3,&config.mutex3);
+        pthread_mutex_unlock(&config.mutex3);
+        if(config.Firsthalf)base=0;
+        else base=TRACE_BUFFER_SIZE/2;
         for(i=0;i<TRACE_BUFFER_SIZE/2;i++){
             fprintf(config.ResultFile, "%llu %llu %llu\n", config.Record_Buffer[base+i].ID,config.Record_Buffer[base+i].Request_us,config.Record_Buffer[base+i].Latency);
         }
-	config.persisted+=TRACE_BUFFER_SIZE/2;
+        config.persisted+=TRACE_BUFFER_SIZE/2;
+        config.Firsthalf=1-config.Firsthalf;
     }
 }
 
@@ -265,7 +299,11 @@ static int initialize(const char* Dev_Path, const char* Trace_Path, const char* 
         goto Error;
     }
 
-    if(pthread_create(&config.BufferManage_th,NULL,Buffer_Manage_Handler,(void*)NULL)!=0){
+    if(pthread_create(&config.TBufferManage_th,NULL,Trace_Buffer_Manage_Handler,(void*)NULL)!=0){
+        printf("Buffer_Manage Thread Create Failed\n");
+        goto Error;
+    }
+    if(pthread_create(&config.RBufferManage_th,NULL,Result_Buffer_Manage_Handler,(void*)NULL)!=0){
         printf("Buffer_Manage Thread Create Failed\n");
         goto Error;
     }
@@ -352,7 +390,7 @@ static void trace_play(){
             break;
         }
         if(i>=TRACE_BUFFER_SIZE/2&&config.Buffer_Needed){
-	   printf("signal\n");
+	        printf("signal\n");
             config.Buffer_Needed=0;
             i=0;
             pthread_mutex_lock(&config.mutex2);
@@ -394,7 +432,8 @@ int main(int argc, char *argv[]){
     if(initialize(Dev_Path,Trace_Path,Result_Path)<0)return -1;
     trace_play();
     pthread_join(config.Reap_th,NULL);
-    pthread_join(config.BufferManage_th,NULL);
+    pthread_join(config.TBufferManage_th,NULL);
+    pthread_join(config.RBufferManage_th,NULL);
     //result_persist();
     finalize();
     return 0;
