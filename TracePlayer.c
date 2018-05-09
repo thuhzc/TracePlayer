@@ -16,7 +16,14 @@
 #include <arpa/inet.h>
 #include <assert.h>
 
-#define pr_debug(fmt, args...) printf("[%s() L.%d]: "fmt, __func__, __LINE__, ## args)
+//#define DEBUG_OEPN
+//#undef DEBUG_OPEN
+
+//#ifdef DEBUG_OPEN
+//	#define pr_debug(fmt, args...) printf("[%s() L.%d]: "fmt, __func__, __LINE__, ## args)
+//#else
+	#define pr_debug(fmt, args...)
+//#endif
 
 typedef unsigned long long ull;
 
@@ -86,7 +93,8 @@ struct Queue_Entry{
     struct iocb IOcb;
     char *Buf;
     ull Request_us;
-    int ID;
+    ull ID;
+    ull Addr;
     struct Queue_Entry *next;
 };
 
@@ -101,7 +109,7 @@ struct Queue_Entry{
 #define QUEUE_LENGTH 4096
 #define AIO_MAXIO 512
 #define IO_BUFFER_SIZE (512*256)
-#define TRACE_BUFFER_SIZE 10000 
+#define TRACE_BUFFER_SIZE 20000 
 
 struct Config config;
 //****************************************
@@ -121,7 +129,12 @@ void* IO_Completion_Handler(void *thread_data){
     ull return_us;
     ull ret1half=0,ret2half=0;
     while(1){
-        if(config.should_stop && config.Nr_Flight_IOs==0 )break;
+        if(config.should_stop && config.Nr_Flight_IOs==0 ){
+                pthread_mutex_lock(&config.mutex3);
+                pthread_cond_signal(&config.cond3);
+                pthread_mutex_unlock(&config.mutex3);
+		break;
+	}
         retIOs=io_getevents(config.ctx,1,1,events,NULL);
         return_us=elapse_us();
         for(i=0;i<retIOs;i++){
@@ -133,7 +146,7 @@ void* IO_Completion_Handler(void *thread_data){
                 printf("IOCB LOST\n");
             }
             n=this_io->ID%TRACE_BUFFER_SIZE;
-	        config.Record_Buffer[n].ID=this_io->ID;
+	    config.Record_Buffer[n].ID=this_io->Addr;
             config.Record_Buffer[n].Request_us=this_io->Request_us;
             config.Record_Buffer[n].Latency=return_us-this_io->Request_us;
             pthread_spin_lock(&config.spinlock);
@@ -142,10 +155,11 @@ void* IO_Completion_Handler(void *thread_data){
             config.tail=this_io;
             config.Nr_Flight_IOs--;
             pthread_spin_unlock(&config.spinlock);
-            if(n>TRACE_BUFFER_SIZE/2)ret1half++;
+            if(n<TRACE_BUFFER_SIZE/2)ret1half++;
             else ret2half++;
-            if(config.Firsthalf){
+            if(config.Firsthalf&&config.Buffer_Needed){
                 if(ret1half==TRACE_BUFFER_SIZE/2){
+		    pr_debug("result signal send %d\n",config.Firsthalf);
                     ret1half=0;
                     pthread_mutex_lock(&config.mutex3);
                     pthread_cond_signal(&config.cond3);
@@ -153,15 +167,18 @@ void* IO_Completion_Handler(void *thread_data){
                 }
             }else{
                 if(ret2half==TRACE_BUFFER_SIZE/2){
+		    pr_debug("result signal send %d\n",config.Firsthalf);
                     ret2half=0;
                     pthread_mutex_lock(&config.mutex3);
                     pthread_cond_signal(&config.cond3);
                     pthread_mutex_unlock(&config.mutex3);
                 }
             }
+	    //usleep(10);
             if(config.sync){
                 pthread_mutex_lock(&config.mutex);
                 pthread_cond_signal(&config.cond);
+		pr_debug("signal:%llu\n",this_io->ID);
                 pthread_mutex_unlock(&config.mutex);
             }
             //pr_debug("ID:%d,req_us:%llu,ret_us:%llu,latency:%llu flight:%d\n",id,this_io->Request_us,return_us,return_us-this_io->Request_us,config.Nr_Flight_IOs);
@@ -175,14 +192,16 @@ void* Trace_Buffer_Manage_Handler(void *thread_data){
     char line[MAX_LINE_LENGTH];
     double req_sec;
     while(1){
+	j=0;
         if(config.should_stop)break;
         pthread_mutex_lock(&config.mutex2);
         pthread_cond_wait(&config.cond2,&config.mutex2);
         pthread_mutex_unlock(&config.mutex2);
-	    printf("buffer flush %d half\n",config.Firsthalf);
+        if(config.should_stop)break;
+	pr_debug("trace signal received %d half\n",config.Firsthalf);
         if(config.Firsthalf)base=0;
         else base=TRACE_BUFFER_SIZE/2;
-        while(fgets(line,MAX_LINE_LENGTH,config.TraceFile)!=NULL&j<TRACE_BUFFER_SIZE/2){
+        while(j<TRACE_BUFFER_SIZE/2&&fgets(line,MAX_LINE_LENGTH,config.TraceFile)!=NULL){
             if(sscanf(line,"%u %lld %d %c %lf\n",&config.Trace_Buffer[base+j].DevID,&config.Trace_Buffer[base+j].StartByte,&config.Trace_Buffer[base+j].ByteCount,&config.Trace_Buffer[base+j].rwType,&req_sec)!=5){
                 printf("Wrong Arguments for Trace\n");
             }
@@ -191,7 +210,8 @@ void* Trace_Buffer_Manage_Handler(void *thread_data){
             j++;
         }
         config.Nr_Trace_Read+=j;
-        if(j==TRACE_BUFFER_SIZE)config.Buffer_Needed=1;
+        if(j==TRACE_BUFFER_SIZE/2)config.Buffer_Needed=1;
+	else config.Buffer_Needed=0;
     }
 }
 
@@ -200,14 +220,16 @@ void* Result_Buffer_Manage_Handler(void *thread_data){
     char line[MAX_LINE_LENGTH];
     double req_sec;
     while(1){
-        if(config.should_stop)break;
+	if(config.should_stop)break;
         pthread_mutex_lock(&config.mutex3);
         pthread_cond_wait(&config.cond3,&config.mutex3);
         pthread_mutex_unlock(&config.mutex3);
+        if(config.should_stop)break;
+	pr_debug("result signal received %d half\n",config.Firsthalf);
         if(config.Firsthalf)base=0;
         else base=TRACE_BUFFER_SIZE/2;
         for(i=0;i<TRACE_BUFFER_SIZE/2;i++){
-            fprintf(config.ResultFile, "%llu %llu %llu\n", config.Record_Buffer[base+i].ID,config.Record_Buffer[base+i].Request_us,config.Record_Buffer[base+i].Latency);
+            fprintf(config.ResultFile, "%llu %llu\n", config.Record_Buffer[base+i].Request_us,config.Record_Buffer[base+i].Latency);
         }
         config.persisted+=TRACE_BUFFER_SIZE/2;
         config.Firsthalf=1-config.Firsthalf;
@@ -215,7 +237,6 @@ void* Result_Buffer_Manage_Handler(void *thread_data){
 }
 
 static void finalize(){
-    pr_debug("finalize\n");
     int i;
     if(config.Device>=0)close(config.Device);
     if(config.TraceFile!=NULL)fclose(config.TraceFile);
@@ -237,6 +258,10 @@ static int initialize(const char* Dev_Path, const char* Trace_Path, const char* 
     pthread_spin_init(&config.spinlock,0);
     pthread_mutex_init(&config.mutex,NULL);  
     pthread_cond_init(&config.cond,NULL);
+    pthread_mutex_init(&config.mutex2,NULL);  
+    pthread_cond_init(&config.cond2,NULL);
+    pthread_mutex_init(&config.mutex3,NULL);  
+    pthread_cond_init(&config.cond3,NULL);
     config.Nr_Trace_Read    =   0;
     config.Nr_Flight_IOs    =   0;
     config.First_Entry_Flag =   1;
@@ -279,7 +304,7 @@ static int initialize(const char* Dev_Path, const char* Trace_Path, const char* 
         goto Error;
     }
 
-    while(fgets(line,MAX_LINE_LENGTH,config.TraceFile)!=NULL&j<TRACE_BUFFER_SIZE){
+    while(j<TRACE_BUFFER_SIZE&&fgets(line,MAX_LINE_LENGTH,config.TraceFile)!=NULL){
         if(sscanf(line,"%u %lld %d %c %lf\n",&config.Trace_Buffer[j].DevID,&config.Trace_Buffer[j].StartByte,&config.Trace_Buffer[j].ByteCount,&config.Trace_Buffer[j].rwType,&req_sec)!=5){
             printf("Wrong Arguments for Trace\n");
         }
@@ -321,12 +346,13 @@ Error:
 }
 
 
-static int process_one_request(int id){
+static int process_one_request(ull id){
+    pr_debug("process %llu start\n",id);
     struct Queue_Entry *this_entry;
     struct iocb *this_iocb;
     int qfree;
     ull cur_us;
-    int n=id%TRACE_BUFFER_SIZE;
+    ull n=id%TRACE_BUFFER_SIZE;
 repeat:
     pthread_spin_lock(&config.spinlock);
     qfree=config.Queue_Free;
@@ -341,12 +367,14 @@ repeat:
     }
     pthread_spin_unlock(&config.spinlock);
     if(qfree<=0)goto repeat;
+    //printf("process id:%d\n",id);
     this_entry->ID = id;
+    this_entry->Addr = config.Trace_Buffer[n].StartByte;
     this_iocb=&this_entry->IOcb;
     if(config.Trace_Buffer[n].ByteCount>IO_BUFFER_SIZE){
         free(this_entry->Buf);
         if((posix_memalign((void **)this_entry->Buf,512,config.Trace_Buffer[n].ByteCount))<0){
-            printf("RePOSIX_MEMALIGN buffer %d failed\n",n);
+            printf("RePOSIX_MEMALIGN buffer %llu failed\n",n);
         }
     }
     if(config.Trace_Buffer[n].rwType=='R'||config.Trace_Buffer[n].rwType=='r'){
@@ -369,19 +397,25 @@ repeat:
     if(io_submit(config.ctx,1,&this_iocb)<0){
         printf("io_submit Failed\n");
     }
+    pr_debug("process %llu end\n",id);
 }
 
 static void trace_play(){
-    int n=0,i=0,j;
+    ull n=0,i=0,j;
     ull now_us;
     while(1){
-	j=n%TRACE_BUFFER_SIZE;
-        process_one_request(j);
-	//printf("process req:%d\n",n);
+        process_one_request(n++);
+	if(config.sync){
+            pthread_mutex_lock(&config.mutex);
+	    pr_debug("lock %llu\n",n-1);
+            pthread_cond_wait(&config.cond,&config.mutex);
+            pthread_mutex_unlock(&config.mutex);
+	    pr_debug("unlock %llu\n",n-1);
+        }
         i++;
-	n++;
         now_us=elapse_us();
         if(now_us-config.Trace_Start_us>config.Test_Time*1000000||n>=config.Nr_Trace_Read){
+	    //printf("nr_trace_read:%d\n",config.Nr_Trace_Read);
 	    config.played=n;
             config.should_stop=1;
             pthread_mutex_lock(&config.mutex2);
@@ -390,32 +424,37 @@ static void trace_play(){
             break;
         }
         if(i>=TRACE_BUFFER_SIZE/2&&config.Buffer_Needed){
-	        printf("signal\n");
+	    pr_debug("trace signal\n");
             config.Buffer_Needed=0;
             i=0;
             pthread_mutex_lock(&config.mutex2);
             pthread_cond_signal(&config.cond2);
             pthread_mutex_unlock(&config.mutex2);
         }
-        if(config.sync){
-            pthread_mutex_lock(&config.mutex);
-            pthread_cond_wait(&config.cond,&config.mutex);
-            pthread_mutex_unlock(&config.mutex);
-        }
         usleep(config.sleep_us);
     }
 }
 
 static void result_persist(){
-    int i,base;
+    int i,start,end;
     if(config.played>config.persisted){
-	base=config.played/TRACE_BUFFER_SIZE;
-    }
-    for(i=0;i<config.Nr_Trace_Read;i++){
-        fprintf(config.ResultFile, "%llu %llu\n", config.Record_Buffer[i].Request_us,config.Record_Buffer[i].Latency );
+	start=config.persisted%TRACE_BUFFER_SIZE;
+	end=config.played%TRACE_BUFFER_SIZE;
+	printf("start:%d,end:%d\n",start,end);
+	if(start<end){
+		for(i=start;i<end;i++){
+		fprintf(config.ResultFile,"%llu %llu\n", config.Record_Buffer[i].Request_us,config.Record_Buffer[i].Latency);
+		}
+	}else{
+		for(i=start;i<start+TRACE_BUFFER_SIZE/2;i++){
+		fprintf(config.ResultFile,"%llu %llu\n", config.Record_Buffer[i].Request_us,config.Record_Buffer[i].Latency);
+		}
+		for(i=0;i<end;i++){
+		fprintf(config.ResultFile,"%llu %llu\n", config.Record_Buffer[i].Request_us,config.Record_Buffer[i].Latency);
+		}
+	}
     }
 }
-
 
 
 int main(int argc, char *argv[]){
@@ -432,9 +471,12 @@ int main(int argc, char *argv[]){
     if(initialize(Dev_Path,Trace_Path,Result_Path)<0)return -1;
     trace_play();
     pthread_join(config.Reap_th,NULL);
+    pr_debug("reap_th join\n");
     pthread_join(config.TBufferManage_th,NULL);
+    pr_debug("tbuff_th join\n");
     pthread_join(config.RBufferManage_th,NULL);
-    //result_persist();
+    pr_debug("rbuff_th join\n");
+    result_persist();
     finalize();
     return 0;
 }
